@@ -3,8 +3,10 @@ ipykernel
 ipywidgets
 numpy
 matplotlib
-qiskit
+pylatexenc
+pdflatex
 qiskit[visualization]
+qiskit-ibm-catalog
 qiskit-aer
 qiskit-ibm-runtime
 python-dotenv
