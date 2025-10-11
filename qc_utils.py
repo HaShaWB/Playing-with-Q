@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 from qiskit_ibm_runtime import SamplerV2
 from qiskit_aer import AerSimulator
 from qiskit.visualization import plot_histogram
+from qiskit.quantum_info import Statevector
 from IPython.display import display
 import warnings
 warnings.filterwarnings('ignore')
@@ -82,10 +83,61 @@ def _run_circuits_batch(circuits: list[QuantumCircuit], backend, shots=1000):
     return [pub_result.data.meas.get_counts() for pub_result in results]
 
 
+def _get_ideal_counts(circuit: QuantumCircuit, shots=1000):
+    """
+    이론적 확률을 계산하여 샷 수에 맞게 counts 반환 (통계적 요동 없음)
+    
+    Statevector를 사용하여 정확한 이론적 확률을 계산한 후,
+    샷 수에 비례하여 counts를 생성
+    """
+    # 측정이 없는 회로 복사
+    qc_no_measure = circuit.copy()
+    if qc_no_measure.cregs:
+        # 측정 제거
+        qc_no_measure = QuantumCircuit(circuit.num_qubits)
+        for instruction in circuit.data:
+            if instruction.operation.name != 'measure':
+                qc_no_measure.append(instruction)
+    
+    # Statevector로 이론적 확률 계산
+    statevector = Statevector(qc_no_measure)
+    probabilities = statevector.probabilities_dict()
+    
+    # 확률을 counts로 변환 (반올림하여 정수로)
+    ideal_counts = {}
+    remaining_shots = shots
+    
+    # 확률이 높은 순서대로 정렬
+    sorted_probs = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
+    
+    for i, (state, prob) in enumerate(sorted_probs):
+        if i == len(sorted_probs) - 1:
+            # 마지막 상태는 남은 샷 모두 할당 (반올림 오차 보정)
+            ideal_counts[state] = remaining_shots
+        else:
+            count = round(prob * shots)
+            ideal_counts[state] = count
+            remaining_shots -= count
+    
+    # 0이 아닌 counts만 반환
+    return {state: count for state, count in ideal_counts.items() if count > 0}
+
+
+def _get_ideal_counts_batch(circuits: list[QuantumCircuit], shots=1000):
+    """여러 회로의 이론적 counts를 계산 (내부 함수)"""
+    return [_get_ideal_counts(circuit, shots) for circuit in circuits]
+
+
 # ==================== 메인 함수 ====================
 
-def run_and_visualize(qc: QuantumCircuit, shots=1000, backend=None, show_circuit=True, 
-                      show_histogram=True, circuit_style='mpl', compare_with_ideal=True):
+def run_and_visualize(qc: QuantumCircuit, 
+                      shots=1000, 
+                      backend=None, 
+                      show_circuit=True, 
+                      show_histogram=True, 
+                      show_results=True,
+                      circuit_style='mpl', 
+                      compare_with_ideal=True):
     """
     양자 회로를 실행하고 결과를 시각화합니다.
     
@@ -101,6 +153,8 @@ def run_and_visualize(qc: QuantumCircuit, shots=1000, backend=None, show_circuit
         회로도를 표시할지 여부
     show_histogram : bool, default=True
         결과 히스토그램을 표시할지 여부
+    show_results : bool, default=True
+        측정 결과를 텍스트로 출력할지 여부
     circuit_style : str, default='mpl'
         회로도 스타일 ('mpl', 'text', 'latex')
     compare_with_ideal : bool, default=True
@@ -151,42 +205,57 @@ def run_and_visualize(qc: QuantumCircuit, shots=1000, backend=None, show_circuit
     
     # 실행 및 결과
     if is_hardware and compare_with_ideal:
-        # 시뮬레이터와 하드웨어 둘 다 실행
-        simulator = AerSimulator()
-        
-        ideal_counts = _run_circuit(circuit, simulator, shots)
+        # 이론적 확률과 하드웨어 결과 비교
+        ideal_counts = _get_ideal_counts(circuit, shots)
         hw_counts = _run_circuit(hw_circuit, backend, shots)
         
         # 결과 출력 (비교)
-        print(f"\n[ Results Comparison ] shots={shots}")
-        print("\n<Ideal (Simulator)>")
-        for state, count in sorted(ideal_counts.items(), key=lambda x: x[1], reverse=True):
-            probability = count / shots * 100
-            print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
-        
-        print(f"\n<Hardware ({backend.name})>")
-        for state, count in sorted(hw_counts.items(), key=lambda x: x[1], reverse=True):
-            probability = count / shots * 100
-            print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+        if show_results:
+            print(f"\n[ Results Comparison ] shots={shots}")
+            print("\n<Ideal (Simulator)>")
+            for state, count in sorted(ideal_counts.items(), key=lambda x: x[1], reverse=True):
+                probability = count / shots * 100
+                print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+            
+            print(f"\n<Hardware ({backend.name})>")
+            for state, count in sorted(hw_counts.items(), key=lambda x: x[1], reverse=True):
+                probability = count / shots * 100
+                print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
         
         # 히스토그램 표시 (비교)
         if show_histogram:
             print("\n[ Histogram Comparison ]")
             fig, axes = plt.subplots(1, 2, figsize=(8, 3))
             
-            # Ideal
-            axes[0].bar(ideal_counts.keys(), ideal_counts.values(), color='C0')
-            axes[0].set_xlabel('State')
-            axes[0].set_ylabel('Count')
+            # Ideal - x축 정렬
+            sorted_ideal = dict(sorted(ideal_counts.items()))
+            bars_ideal = axes[0].bar(sorted_ideal.keys(), sorted_ideal.values(), color='C0')
+            axes[0].set_xlabel('State', fontsize=12)
+            axes[0].set_ylabel('Count', fontsize=12)
             axes[0].set_title('Ideal (Simulator)')
-            axes[0].set_ylim(0, shots * 1.1)
+            axes[0].set_ylim(0, shots * 1.2)
+            axes[0].tick_params(axis='both', labelsize=11)
+            # 막대 위에 비율 표시
+            for bar in bars_ideal:
+                height = bar.get_height()
+                axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                           f'{height/shots*100:.1f}%',
+                           ha='center', va='bottom', fontsize=9)
             
-            # Hardware
-            axes[1].bar(hw_counts.keys(), hw_counts.values(), color='C1')
-            axes[1].set_xlabel('State')
-            axes[1].set_ylabel('Count')
+            # Hardware - x축 정렬
+            sorted_hw = dict(sorted(hw_counts.items()))
+            bars_hw = axes[1].bar(sorted_hw.keys(), sorted_hw.values(), color='C1')
+            axes[1].set_xlabel('State', fontsize=12)
+            axes[1].set_ylabel('Count', fontsize=12)
             axes[1].set_title(f'Hardware ({backend.name})')
-            axes[1].set_ylim(0, shots * 1.1)
+            axes[1].set_ylim(0, shots * 1.2)
+            axes[1].tick_params(axis='both', labelsize=11)
+            # 막대 위에 비율 표시
+            for bar in bars_hw:
+                height = bar.get_height()
+                axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                           f'{height/shots*100:.1f}%',
+                           ha='center', va='bottom', fontsize=9)
             
             fig.tight_layout()
             display(fig)
@@ -198,16 +267,33 @@ def run_and_visualize(qc: QuantumCircuit, shots=1000, backend=None, show_circuit
         # 일반 실행 (시뮬레이터 또는 비교 안 함)
         counts = _run_circuit(hw_circuit, backend, shots)
         
-        backend_name = getattr(backend, 'name', 'Simulator')
-        print(f"\n[ Results ] shots={shots}, states={len(counts)} ({backend_name})")
-        for state, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
-            probability = count / shots * 100
-            print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+        if show_results:
+            backend_name = getattr(backend, 'name', 'Simulator')
+            print(f"\n[ Results ] shots={shots}, states={len(counts)} ({backend_name})")
+            for state, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+                probability = count / shots * 100
+                print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
         
         # 히스토그램 표시
         if show_histogram:
             print("\n[ Histogram ]")
-            fig = plot_histogram(counts, figsize=(5, 3))
+            fig, ax = plt.subplots(figsize=(5, 3))
+            
+            # x축 정렬
+            sorted_counts = dict(sorted(counts.items()))
+            bars = ax.bar(sorted_counts.keys(), sorted_counts.values(), color='C0')
+            ax.set_xlabel('State', fontsize=12)
+            ax.set_ylabel('Count', fontsize=12)
+            ax.set_ylim(0, shots * 1.2)
+            ax.tick_params(axis='both', labelsize=11)
+            
+            # 막대 위에 비율 표시
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height/shots*100:.1f}%',
+                       ha='center', va='bottom', fontsize=9)
+            
             fig.tight_layout()
             display(fig)
             plt.close()
@@ -215,8 +301,14 @@ def run_and_visualize(qc: QuantumCircuit, shots=1000, backend=None, show_circuit
         return counts
 
 
-def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, backend=None,
-                     show_circuit=True, show_histogram=True, circuit_style='mpl', 
+def compare_circuits(circuits: list[QuantumCircuit], 
+                     labels=None, 
+                     shots=1000, 
+                     backend=None,
+                     show_circuit=True, 
+                     show_histogram=True, 
+                     show_results=True,
+                     circuit_style='mpl', 
                      compare_with_ideal=True):
     """
     여러 양자 회로의 결과를 비교합니다.
@@ -235,6 +327,8 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
         회로도를 표시할지 여부
     show_histogram : bool, default=True
         결과 히스토그램을 표시할지 여부
+    show_results : bool, default=True
+        측정 결과를 텍스트로 출력할지 여부
     circuit_style : str, default='mpl'
         회로도 스타일 ('mpl', 'text', 'latex')
     compare_with_ideal : bool, default=True
@@ -290,27 +384,26 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
     
     # 실행 및 결과
     if is_hardware and compare_with_ideal:
-        # 시뮬레이터와 하드웨어 둘 다 실행
-        simulator = AerSimulator()
-        
-        ideal_counts_list = _run_circuits_batch(circuits_with_measurement, simulator, shots)
+        # 이론적 확률과 하드웨어 결과 비교
+        ideal_counts_list = _get_ideal_counts_batch(circuits_with_measurement, shots)
         hw_counts_list = _run_circuits_batch(hw_circuits, backend, shots)
         
         # 결과 출력 (비교)
-        print(f"\n[ Results Comparison ] shots={shots}")
-        
-        for i, label in enumerate(labels):
-            print(f"\n{label}:")
-            print("  <Ideal>", end="")
-            for state, count in sorted(ideal_counts_list[i].items(), key=lambda x: x[1], reverse=True)[:3]:
-                probability = count / shots * 100
-                print(f"  |{state}⟩: {probability:5.1f}%", end="")
+        if show_results:
+            print(f"\n[ Results Comparison ] shots={shots}")
             
-            print(f"\n  <HW>   ", end="")
-            for state, count in sorted(hw_counts_list[i].items(), key=lambda x: x[1], reverse=True)[:3]:
-                probability = count / shots * 100
-                print(f"  |{state}⟩: {probability:5.1f}%", end="")
-            print()
+            for i, label in enumerate(labels):
+                print(f"\n{label}:")
+                print("  <Ideal>", end="")
+                for state, count in sorted(ideal_counts_list[i].items(), key=lambda x: x[1], reverse=True)[:3]:
+                    probability = count / shots * 100
+                    print(f"  |{state}⟩: {probability:5.1f}%", end="")
+                
+                print(f"\n  <HW>   ", end="")
+                for state, count in sorted(hw_counts_list[i].items(), key=lambda x: x[1], reverse=True)[:3]:
+                    probability = count / shots * 100
+                    print(f"  |{state}⟩: {probability:5.1f}%", end="")
+                print()
         
         # 히스토그램 표시 (비교)
         if show_histogram:
@@ -323,19 +416,35 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
                 axes = axes.reshape(2, 1)
             
             for idx, label in enumerate(labels):
-                # Ideal
-                axes[0, idx].bar(ideal_counts_list[idx].keys(), ideal_counts_list[idx].values(), color='C0')
-                axes[0, idx].set_xlabel('State')
-                axes[0, idx].set_ylabel('Count')
+                # Ideal - x축 정렬
+                sorted_ideal = dict(sorted(ideal_counts_list[idx].items()))
+                bars_ideal = axes[0, idx].bar(sorted_ideal.keys(), sorted_ideal.values(), color='C0')
+                axes[0, idx].set_xlabel('State', fontsize=12)
+                axes[0, idx].set_ylabel('Count', fontsize=12)
                 axes[0, idx].set_title(f'{label} (Ideal)')
-                axes[0, idx].set_ylim(0, shots * 1.1)
+                axes[0, idx].set_ylim(0, shots * 1.2)
+                axes[0, idx].tick_params(axis='both', labelsize=11)
+                # 막대 위에 비율 표시
+                for bar in bars_ideal:
+                    height = bar.get_height()
+                    axes[0, idx].text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height/shots*100:.1f}%',
+                                    ha='center', va='bottom', fontsize=9)
                 
-                # Hardware
-                axes[1, idx].bar(hw_counts_list[idx].keys(), hw_counts_list[idx].values(), color='C1')
-                axes[1, idx].set_xlabel('State')
-                axes[1, idx].set_ylabel('Count')
+                # Hardware - x축 정렬
+                sorted_hw = dict(sorted(hw_counts_list[idx].items()))
+                bars_hw = axes[1, idx].bar(sorted_hw.keys(), sorted_hw.values(), color='C1')
+                axes[1, idx].set_xlabel('State', fontsize=12)
+                axes[1, idx].set_ylabel('Count', fontsize=12)
                 axes[1, idx].set_title(f'{label} (HW)')
-                axes[1, idx].set_ylim(0, shots * 1.1)
+                axes[1, idx].set_ylim(0, shots * 1.2)
+                axes[1, idx].tick_params(axis='both', labelsize=11)
+                # 막대 위에 비율 표시
+                for bar in bars_hw:
+                    height = bar.get_height()
+                    axes[1, idx].text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height/shots*100:.1f}%',
+                                    ha='center', va='bottom', fontsize=9)
             
             fig.tight_layout()
             display(fig)
@@ -347,13 +456,14 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
         # 일반 실행 (시뮬레이터 또는 비교 안 함)
         all_counts = _run_circuits_batch(hw_circuits, backend, shots)
         
-        backend_name = getattr(backend, 'name', 'Simulator')
-        print(f"\n[ Results ] shots={shots} ({backend_name})")
-        for i, (label, counts) in enumerate(zip(labels, all_counts)):
-            print(f"\n{label}:")
-            for state, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]:
-                probability = count / shots * 100
-                print(f"  |{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+        if show_results:
+            backend_name = getattr(backend, 'name', 'Simulator')
+            print(f"\n[ Results ] shots={shots} ({backend_name})")
+            for i, (label, counts) in enumerate(zip(labels, all_counts)):
+                print(f"\n{label}:")
+                for state, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+                    probability = count / shots * 100
+                    print(f"  |{state}⟩: {count:4d}회 ({probability:6.2f}%)")
         
         # 히스토그램
         if show_histogram:
@@ -366,15 +476,21 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
                 axes = [axes]
             
             for idx, (counts, label) in enumerate(zip(all_counts, labels)):
-                axes[idx].bar(counts.keys(), counts.values(), color=f'C{idx}')
-                axes[idx].set_xlabel('State')
-                axes[idx].set_ylabel('Count')
+                # x축 정렬
+                sorted_counts = dict(sorted(counts.items()))
+                bars = axes[idx].bar(sorted_counts.keys(), sorted_counts.values(), color=f'C{idx}')
+                axes[idx].set_xlabel('State', fontsize=12)
+                axes[idx].set_ylabel('Count', fontsize=12)
                 axes[idx].set_title(label)
-                axes[idx].set_ylim(0, shots * 1.1)
+                axes[idx].set_ylim(0, shots * 1.2)
+                axes[idx].tick_params(axis='both', labelsize=11)
                 
-                # x축 레이블을 ket 표기법으로
-                axes[idx].set_xticks(range(len(counts)))
-                axes[idx].set_xticklabels([f'|{state}⟩' for state in counts.keys()])
+                # 막대 위에 비율 표시
+                for bar in bars:
+                    height = bar.get_height()
+                    axes[idx].text(bar.get_x() + bar.get_width()/2., height,
+                                 f'{height/shots*100:.1f}%',
+                                 ha='center', va='bottom', fontsize=9)
             
             fig.tight_layout()
             display(fig)
@@ -383,7 +499,11 @@ def compare_circuits(circuits: list[QuantumCircuit], labels=None, shots=1000, ba
         return all_counts
 
 
-def quick_run(qc: QuantumCircuit, shots=1000, backend=None, compare_with_ideal=False):
+def quick_run(qc: QuantumCircuit, 
+              shots=1000, 
+              backend=None, 
+              show_results=False,
+              compare_with_ideal=False):
     """
     양자 회로를 빠르게 실행하고 결과만 반환합니다 (시각화 없음).
     
@@ -395,6 +515,8 @@ def quick_run(qc: QuantumCircuit, shots=1000, backend=None, compare_with_ideal=F
         측정 샷 수
     backend : Backend, optional
         사용할 백엔드 (None이면 AerSimulator)
+    show_results : bool, default=False
+        측정 결과를 텍스트로 출력할지 여부
     compare_with_ideal : bool, default=False
         하드웨어 실행 시 시뮬레이터 결과도 함께 반환
     
@@ -417,12 +539,37 @@ def quick_run(qc: QuantumCircuit, shots=1000, backend=None, compare_with_ideal=F
         circuit = transpile(circuit, backend=backend, optimization_level=3)
         
         if compare_with_ideal:
-            simulator = AerSimulator()
-            ideal_counts = _run_circuit(qc.copy() if qc.cregs else qc, simulator, shots)
+            # 원본 회로에서 이론적 확률 계산
+            original_circuit = qc.copy()
+            if not original_circuit.cregs:
+                original_circuit.measure_all()
+            ideal_counts = _get_ideal_counts(original_circuit, shots)
             hw_counts = _run_circuit(circuit, backend, shots)
+            
+            if show_results:
+                print(f"\n[ Quick Run Results ] shots={shots}")
+                print("\n<Ideal (Simulator)>")
+                for state, count in sorted(ideal_counts.items(), key=lambda x: x[1], reverse=True):
+                    probability = count / shots * 100
+                    print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+                
+                print(f"\n<Hardware ({backend.name})>")
+                for state, count in sorted(hw_counts.items(), key=lambda x: x[1], reverse=True):
+                    probability = count / shots * 100
+                    print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+            
             return ideal_counts, hw_counts
     
-    return _run_circuit(circuit, backend, shots)
+    counts = _run_circuit(circuit, backend, shots)
+    
+    if show_results:
+        backend_name = getattr(backend, 'name', 'Simulator')
+        print(f"\n[ Quick Run Results ] shots={shots} ({backend_name})")
+        for state, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+            probability = count / shots * 100
+            print(f"|{state}⟩: {count:4d}회 ({probability:6.2f}%)")
+    
+    return counts
 
 
 def circuit_info(qc: QuantumCircuit):
@@ -446,14 +593,16 @@ def circuit_info(qc: QuantumCircuit):
 if __name__ == "__main__":
     print("Qiskit 유틸리티가 로드되었습니다!")
     print("\n사용 가능한 함수:")
-    print("  - run_and_visualize(qc, shots=1000, compare_with_ideal=True)")
-    print("  - compare_circuits(circuits, labels=None, compare_with_ideal=True)")
-    print("  - quick_run(qc, shots=1000, compare_with_ideal=False)")
+    print("  - run_and_visualize(qc, shots=1000, backend=None, show_circuit=True, show_histogram=True, show_results=True)")
+    print("  - compare_circuits(circuits, labels=None, shots=1000, backend=None, show_circuit=True, show_histogram=True, show_results=True)")
+    print("  - quick_run(qc, shots=1000, backend=None, show_results=False)")
     print("  - circuit_info(qc)")
     print("\n예제:")
     print("  qc = QuantumCircuit(2)")
     print("  qc.h(0)")
     print("  qc.cx(0, 1)")
     print("  counts = run_and_visualize(qc)")
+    print("\n  # 결과 출력 없이 히스토그램만")
+    print("  counts = run_and_visualize(qc, show_results=False)")
     print("\n  # 하드웨어 사용 시 자동으로 시뮬레이터 결과와 비교")
     print("  ideal, hw = run_and_visualize(qc, backend=hardware)")
