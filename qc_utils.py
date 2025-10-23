@@ -130,47 +130,38 @@ def _get_ideal_counts_batch(circuits: list[QuantumCircuit], shots=1000):
 
 # ==================== 메인 함수 ====================
 
-def run_and_visualize(qc: QuantumCircuit, 
-                      shots=1000, 
-                      backend=None, 
-                      show_circuit=True, 
-                      show_histogram=True, 
-                      show_results=True,
-                      circuit_style='mpl', 
-                      compare_with_ideal=True):
+def run_and_visualize(qc: QuantumCircuit,
+                      shots: int = 1000,
+                      backend=None,
+                      show_circuit: bool = True,
+                      show_histogram: bool = True,
+                      show_results: bool = True,
+                      circuit_style: str = 'mpl',
+                      compare_with_ideal: bool = True,
+                      optimize_circuit: bool = True):
     """
-    양자 회로를 실행하고 결과를 시각화합니다.
-    
-    Parameters
-    ----------
-    qc : QuantumCircuit
-        실행할 양자 회로 (측정이 없으면 자동으로 measure_all 추가)
-    shots : int, default=1000
-        측정 샷 수
-    backend : Backend, optional
-        사용할 백엔드 (None이면 AerSimulator 사용)
-    show_circuit : bool, default=True
-        회로도를 표시할지 여부
-    show_histogram : bool, default=True
-        결과 히스토그램을 표시할지 여부
-    show_results : bool, default=True
-        측정 결과를 텍스트로 출력할지 여부
-    circuit_style : str, default='mpl'
-        회로도 스타일 ('mpl', 'text', 'latex')
-    compare_with_ideal : bool, default=True
-        하드웨어 실행 시 시뮬레이터 결과도 함께 표시
-    
-    Returns
-    -------
-    dict or tuple of dict
-        측정 결과 counts (compare_with_ideal=True이고 하드웨어면 (ideal_counts, hw_counts))
-    
-    Examples
-    --------
-    >>> qc = QuantumCircuit(2)
-    >>> qc.h(0)
-    >>> qc.cx(0, 1)
-    >>> counts = run_and_visualize(qc)
+    양자 회로를 실행하고 결과를 시각화한다.
+
+    Args:
+        qc (QuantumCircuit): 실행할 양자 회로 (측정이 없으면 자동으로 measure_all 추가).
+        shots (int): 측정 샷 수. 기본값은 1000.
+        backend (Backend, optional): 사용할 백엔드. None이면 AerSimulator를 사용한다.
+        show_circuit (bool): 회로도를 표시할지 여부. 기본값은 True.
+        show_histogram (bool): 결과 히스토그램을 표시할지 여부. 기본값은 True.
+        show_results (bool): 측정 결과를 텍스트로 출력할지 여부. 기본값은 True.
+        circuit_style (str): 회로도 스타일 ('mpl', 'text', 'latex'). 기본값은 'mpl'.
+        compare_with_ideal (bool): 하드웨어 실행 시 시뮬레이터 결과도 함께 표시할지 여부. 기본값은 True.
+        optimize_circuit (bool): 하드웨어 실행 시 회로 최적화(transpile) 여부. 기본값은 True.
+
+    Returns:
+        dict or tuple: 측정 결과 counts.
+            compare_with_ideal=True이고 하드웨어 백엔드일 경우 (ideal_counts, hw_counts) 튜플을 반환한다.
+
+    Examples:
+        >>> qc = QuantumCircuit(2)
+        >>> qc.h(0)
+        >>> qc.cx(0, 1)
+        >>> counts = run_and_visualize(qc)
     """
     
     # 회로 복사 (원본 수정 방지)
@@ -195,7 +186,7 @@ def run_and_visualize(qc: QuantumCircuit,
     
     # 하드웨어인 경우 transpile
     hw_circuit = circuit
-    if is_hardware:
+    if is_hardware and optimize_circuit:
         hw_circuit = transpile(circuit, backend=backend, optimization_level=3)
         
         # Transpile된 회로 표시
