@@ -177,7 +177,8 @@ def run_and_visualize(qc: QuantumCircuit,
     
     # 하드웨어 여부 체크
     from qiskit import transpile
-    is_hardware = hasattr(backend, 'simulator') and not backend.simulator
+    # AerSimulator는 시뮬레이터, 실제 하드웨어는 IBMBackend 타입
+    is_hardware = not isinstance(backend, AerSimulator)
     
     # 회로도 표시 (원본)
     if show_circuit:
@@ -347,7 +348,8 @@ def compare_circuits(circuits: list[QuantumCircuit],
     
     # 측정 추가
     from qiskit import transpile
-    is_hardware = hasattr(backend, 'simulator') and not backend.simulator
+    # AerSimulator는 시뮬레이터, 실제 하드웨어는 IBMBackend 타입
+    is_hardware = not isinstance(backend, AerSimulator)
     
     circuits_with_measurement = []
     for circuit in circuits:
@@ -524,7 +526,8 @@ def quick_run(qc: QuantumCircuit,
         backend = AerSimulator()
     
     from qiskit import transpile
-    is_hardware = hasattr(backend, 'simulator') and not backend.simulator
+    # AerSimulator는 시뮬레이터, 실제 하드웨어는 IBMBackend 타입
+    is_hardware = not isinstance(backend, AerSimulator)
     
     if is_hardware:
         circuit = transpile(circuit, backend=backend, optimization_level=3)
